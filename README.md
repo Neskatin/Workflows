@@ -1,2 +1,2 @@
-# SecureHive.Libs.Workflows
+# Workflows
 Github Workflow Templates
