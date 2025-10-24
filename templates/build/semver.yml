@@ -1,0 +1,172 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Build Semantic Version
+# =============================================================================
+# This workflow calculates semantic versioning using GitVersion.
+# It can be called from other workflows as a reusable job template.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Build Semantic Version
+
+on:
+  workflow_call:
+    inputs:
+      # Directory containing the .NET project/solution
+      rootDirectory:
+        description: 'Root directory of the .NET project'
+        required: false
+        type: string
+        default: '.'
+
+      # GitVersion configuration file
+      config:
+        description: 'GitVersion configuration file path'
+        required: false
+        type: string
+        default: 'GitVersion.yml'
+
+      # Runner operating system
+      runsOn:
+        description: 'Runner OS (ubuntu-latest, windows-latest, etc.)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+    outputs:
+      # Version outputs for downstream jobs
+      VERSION_CORE:
+        description: 'Core version (Major.Minor.Patch)'
+        value: ${{ jobs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER:
+        description: 'Semantic version'
+        value: ${{ jobs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER:
+        description: 'Full semantic version with metadata'
+        value: ${{ jobs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA:
+        description: 'Full Git SHA'
+        value: ${{ jobs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA:
+        description: 'Short Git SHA'
+        value: ${{ jobs.build_semver.outputs.VERSION_SHORTSHA }}
+      VERSION_SEMVER_RELEASE:
+        description: 'Release semantic version'
+        value: ${{ jobs.build_semver.outputs.VERSION_SEMVER_RELEASE }}
+
+jobs:
+  build_semver:
+    name: 'Calculate Version'
+    runs-on: ${{ inputs.runsOn }}
+
+    # Set job outputs
+    outputs:
+      VERSION_CORE: ${{ steps.gitversion.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ steps.gitversion.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ steps.gitversion.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ steps.gitversion.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ steps.gitversion.outputs.VERSION_SHORTSHA }}
+      VERSION_SEMVER_RELEASE: ${{ steps.gitversion.outputs.VERSION_SEMVER_RELEASE }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history required for GitVersion
+
+      # -----------------------------------------------------------------------
+      # Step 2: Setup .NET SDK (Using global.json)
+      # -----------------------------------------------------------------------
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.rootDirectory }}/global.json
+
+      # -----------------------------------------------------------------------
+      # Step 3: Restore .NET Local Tools
+      # -----------------------------------------------------------------------
+      - name: Restore .NET local tools
+        working-directory: ${{ inputs.rootDirectory }}
+        run: dotnet tool restore
+
+      # -----------------------------------------------------------------------
+      # Step 4: Calculate Semantic Version with GitVersion
+      # -----------------------------------------------------------------------
+      - name: Calculate semantic version with GitVersion
+        id: gitversion
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          echo "📊 Running GitVersion with config: ${{ inputs.config }}"
+
+          # Run GitVersion with diagnostics
+          output=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /diag)
+          exit_code=$?
+
+          if [ $exit_code -ne 0 ]; then
+            echo "❌ ERROR: Failed to calculate SemVer with GitVersion"
+            echo "$output"
+            exit 1
+          fi
+
+          echo "✅ GitVersion output:"
+          echo "$output"
+          echo ""
+
+          # Extract version components
+          echo "📦 Extracting version components..."
+          branchName=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable BranchName)
+          semver=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable SemVer)
+          fullsemver=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable FullSemVer)
+          sha=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable Sha)
+          shortsha=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable ShortSha)
+          majorMinorPatch=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable MajorMinorPatch)
+          preReleaseTagWithDash=$(dotnet dotnet-gitversion /config '${{ inputs.config }}' /showvariable PreReleaseTagWithDash)
+
+          # Calculate release version (with or without pre-release tag)
+          if [ "$branchName" != "main" ] && [ "$branchName" != "master" ]; then
+            semverRelease="$majorMinorPatch$preReleaseTagWithDash"
+            echo "🔀 Non-main branch detected: $branchName"
+            echo "📌 Using pre-release version: $semverRelease"
+          else
+            semverRelease="$majorMinorPatch"
+            echo "✨ Main branch detected: $branchName"
+            echo "📌 Using release version: $semverRelease"
+          fi
+
+          # Set output variables for downstream jobs
+          echo "VERSION_CORE=$majorMinorPatch" >> $GITHUB_OUTPUT
+          echo "VERSION_SEMVER=$semver" >> $GITHUB_OUTPUT
+          echo "VERSION_FULLSEMVER=$fullsemver" >> $GITHUB_OUTPUT
+          echo "VERSION_SHA=$sha" >> $GITHUB_OUTPUT
+          echo "VERSION_SHORTSHA=$shortsha" >> $GITHUB_OUTPUT
+          echo "VERSION_SEMVER_RELEASE=$semverRelease" >> $GITHUB_OUTPUT
+
+          # Display calculated versions
+          echo ""
+          echo "=========================================="
+          echo "📋 Version Summary"
+          echo "=========================================="
+          echo "Branch Name:      $branchName"
+          echo "Core Version:     $majorMinorPatch"
+          echo "SemVer:           $semver"
+          echo "Full SemVer:      $fullsemver"
+          echo "Release Version:  $semverRelease"
+          echo "Git SHA:          $sha"
+          echo "Short SHA:        $shortsha"
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 5: Set Environment Variables (Optional - for current job)
+      # -----------------------------------------------------------------------
+      - name: Set version environment variables
+        shell: bash
+        run: |
+          echo "VERSION_CORE=${{ steps.gitversion.outputs.VERSION_CORE }}" >> $GITHUB_ENV
+          echo "VERSION_SEMVER=${{ steps.gitversion.outputs.VERSION_SEMVER }}" >> $GITHUB_ENV
+          echo "VERSION_FULLSEMVER=${{ steps.gitversion.outputs.VERSION_FULLSEMVER }}" >> $GITHUB_ENV
+          echo "VERSION_SHA=${{ steps.gitversion.outputs.VERSION_SHA }}" >> $GITHUB_ENV
+          echo "VERSION_SHORTSHA=${{ steps.gitversion.outputs.VERSION_SHORTSHA }}" >> $GITHUB_ENV
+          echo "VERSION_SEMVER_RELEASE=${{ steps.gitversion.outputs.VERSION_SEMVER_RELEASE }}" >> $GITHUB_ENV

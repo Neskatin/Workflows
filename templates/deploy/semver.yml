@@ -1,0 +1,306 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Tag Repository
+# =============================================================================
+# This workflow creates and pushes a Git tag to the repository.
+# It uses the semantic version calculated by the build_semver job.
+# Supports creating annotated tags with release notes and metadata.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Tag Repository
+
+on:
+  workflow_call:
+    inputs:
+      # Tag prefix (e.g., 'v' for v1.2.3)
+      tagPrefix:
+        description: "Prefix for the version tag"
+        required: false
+        type: string
+        default: "v"
+
+      # Use VERSION_CORE or VERSION_SEMVER
+      useVersionCore:
+        description: "Use VERSION_CORE (true) or VERSION_SEMVER (false) for tagging"
+        required: false
+        type: boolean
+        default: true
+
+      # Create annotated tag (with message)
+      annotated:
+        description: "Create annotated tag with message"
+        required: false
+        type: boolean
+        default: true
+
+      # Force tag creation (overwrite existing)
+      force:
+        description: "Force tag creation (overwrite if exists)"
+        required: false
+        type: boolean
+        default: false
+
+      # Additional tag suffix (e.g., '-beta', '-rc1')
+      tagSuffix:
+        description: "Suffix to append to the tag"
+        required: false
+        type: string
+        default: ""
+
+      # Runner operating system
+      runsOn:
+        description: "Runner OS (ubuntu-latest, windows-latest, etc.)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    outputs:
+      # Output the created tag name
+      tag:
+        description: "Created tag name"
+        value: ${{ jobs.tag_repository.outputs.tag }}
+
+      # Output whether tag was created
+      created:
+        description: "Whether the tag was created"
+        value: ${{ jobs.tag_repository.outputs.created }}
+
+jobs:
+  deploy_semver:
+    name: "Git: Tag Repository"
+    runs-on: ${{ inputs.runsOn }}
+
+    # Set required permissions
+    permissions:
+      contents: write
+
+    # Set job outputs
+    outputs:
+      tag: ${{ steps.create-tag.outputs.tag }}
+      created: ${{ steps.create-tag.outputs.created }}
+
+    # Environment variables consumed from build_semver job
+    env:
+      VERSION_CORE: ${{ needs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ needs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ needs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ needs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ needs.build_semver.outputs.VERSION_SHORTSHA }}
+      VERSION_SEMVER_RELEASE: ${{ needs.build_semver.outputs.VERSION_SEMVER_RELEASE }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Step 2: Configure Git
+      # -----------------------------------------------------------------------
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # -----------------------------------------------------------------------
+      # Step 3: Validate Version Variables
+      # -----------------------------------------------------------------------
+      - name: Validate version is set
+        shell: bash
+        run: |
+          if [ "${{ inputs.useVersionCore }}" == "true" ]; then
+            if [ -z "$VERSION_CORE" ]; then
+              echo "❌ ERROR: VERSION_CORE is not set"
+              exit 1
+            else
+              echo "✅ VERSION_CORE is set to: $VERSION_CORE"
+            fi
+          else
+            if [ -z "$VERSION_SEMVER" ]; then
+              echo "❌ ERROR: VERSION_SEMVER is not set"
+              exit 1
+            else
+              echo "✅ VERSION_SEMVER is set to: $VERSION_SEMVER"
+            fi
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Determine Tag Name
+      # -----------------------------------------------------------------------
+      - name: Determine tag name
+        id: determine-tag
+        shell: bash
+        run: |
+          # Select version based on input
+          if [ "${{ inputs.useVersionCore }}" == "true" ]; then
+            VERSION="$VERSION_CORE"
+            echo "📌 Using VERSION_CORE: $VERSION"
+          else
+            VERSION="$VERSION_SEMVER"
+            echo "📌 Using VERSION_SEMVER: $VERSION"
+          fi
+
+          # Build tag name
+          TAG_NAME="${{ inputs.tagPrefix }}${VERSION}${{ inputs.tagSuffix }}"
+
+          echo "🏷️  Tag name: $TAG_NAME"
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      # -----------------------------------------------------------------------
+      # Step 5: Check if Tag Already Exists
+      # -----------------------------------------------------------------------
+      - name: Check if tag exists
+        id: check-tag
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.determine-tag.outputs.tag }}"
+
+          # Fetch all tags
+          git fetch --tags
+
+          # Check if tag exists
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "⚠️  Tag '$TAG_NAME' already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+
+            if [ "${{ inputs.force }}" == "true" ]; then
+              echo "🔄 Force mode enabled - tag will be overwritten"
+            else
+              echo "❌ ERROR: Tag already exists and force mode is disabled"
+              exit 1
+            fi
+          else
+            echo "✅ Tag '$TAG_NAME' does not exist"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 6: Create Tag Message
+      # -----------------------------------------------------------------------
+      - name: Prepare tag message
+        id: tag-message
+        if: inputs.annotated == true
+        shell: bash
+        run: |
+          # Create tag message
+          MESSAGE="Release ${{ steps.determine-tag.outputs.tag }}
+
+          Version Information:
+          - Core Version: $VERSION_CORE
+          - SemVer: $VERSION_SEMVER
+          - Full SemVer: $VERSION_FULLSEMVER
+          - Commit SHA: $VERSION_SHA
+          - Short SHA: $VERSION_SHORTSHA
+
+          Build Information:
+          - Branch: ${{ github.ref_name }}
+          - Workflow: ${{ github.workflow }}
+          - Run ID: ${{ github.run_id }}
+          - Run Number: ${{ github.run_number }}
+          - Actor: ${{ github.actor }}
+          - Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}"
+
+          # Save to output
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$MESSAGE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "✅ Tag message prepared"
+
+      # -----------------------------------------------------------------------
+      # Step 7: Create Git Tag
+      # -----------------------------------------------------------------------
+      - name: Create Git tag
+        id: create-tag
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.determine-tag.outputs.tag }}"
+
+          echo "🏷️  Creating tag: $TAG_NAME"
+
+          # Delete existing tag if force mode
+          if [ "${{ steps.check-tag.outputs.exists }}" == "true" ] && [ "${{ inputs.force }}" == "true" ]; then
+            echo "🗑️  Deleting existing tag locally..."
+            git tag -d "$TAG_NAME" || true
+
+            echo "🗑️  Deleting existing tag remotely..."
+            git push origin ":refs/tags/$TAG_NAME" || true
+          fi
+
+          # Create tag
+          if [ "${{ inputs.annotated }}" == "true" ]; then
+            echo "📝 Creating annotated tag..."
+            git tag -a "$TAG_NAME" -m "${{ steps.tag-message.outputs.message }}"
+          else
+            echo "📝 Creating lightweight tag..."
+            git tag "$TAG_NAME"
+          fi
+
+          # Verify tag was created
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "✅ Tag created successfully"
+            echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+            echo "created=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ERROR: Failed to create tag"
+            echo "created=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 8: Push Tag to Remote
+      # -----------------------------------------------------------------------
+      - name: Push tag to remote
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.create-tag.outputs.tag }}"
+
+          echo "📤 Pushing tag to remote: $TAG_NAME"
+
+          # Push tag (with force if enabled)
+          if [ "${{ inputs.force }}" == "true" ]; then
+            git push origin "$TAG_NAME" --force
+          else
+            git push origin "$TAG_NAME"
+          fi
+
+          echo "✅ Tag pushed successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 9: Display Tag Information
+      # -----------------------------------------------------------------------
+      - name: Display tag information
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.create-tag.outputs.tag }}"
+
+          echo ""
+          echo "=========================================="
+          echo "🏷️  Git Tag Information"
+          echo "=========================================="
+          echo "Tag Name:     $TAG_NAME"
+          echo "Tag Type:     ${{ inputs.annotated && 'Annotated' || 'Lightweight' }}"
+          echo "Version Core: $VERSION_CORE"
+          echo "Version Sem:  $VERSION_SEMVER"
+          echo "Commit SHA:   $VERSION_SHA"
+          echo ""
+
+          # Show tag details
+          git show "$TAG_NAME" --no-patch
+
+          echo ""
+          echo "=========================================="
+          echo "✅ Repository tagged successfully"
+          echo "=========================================="
+          echo ""
+          echo "View tag at:"
+          echo "https://github.com/${{ github.repository }}/releases/tag/$TAG_NAME"
+          echo "=========================================="

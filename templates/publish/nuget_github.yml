@@ -1,0 +1,228 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Publish NuGet Packages to GitHub
+# =============================================================================
+# This workflow publishes NuGet packages to GitHub Packages registry.
+# It downloads artifacts from a previous build job and pushes them to the registry.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Publish NuGet to GitHub
+
+on:
+  workflow_call:
+    inputs:
+      # Artifact name to download (from build_nuget job)
+      artifactName:
+        description: 'Name of the artifact containing NuGet packages'
+        required: false
+        type: string
+        default: 'nuget-packages-Linux'
+
+      # Enable/disable skipping duplicate packages
+      skipDuplicate:
+        description: 'Skip pushing duplicate packages'
+        required: false
+        type: boolean
+        default: true
+
+      # Runner operating system
+      runsOn:
+        description: 'Runner OS (ubuntu-latest, windows-latest, etc.)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+    secrets:
+      # GitHub token with package write permissions
+      GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+
+jobs:
+  publish_nuget_github:
+    name: 'NuGet: Publish to GitHub'
+    runs-on: ${{ inputs.runsOn }}
+
+    # Set required permissions for GitHub Packages
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Download NuGet Package Artifacts
+      # -----------------------------------------------------------------------
+      - name: Download NuGet packages
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+          path: ./packages
+
+      # -----------------------------------------------------------------------
+      # Step 2: List Downloaded Packages
+      # -----------------------------------------------------------------------
+      - name: List downloaded packages
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "📦 Downloaded NuGet Packages"
+          echo "=========================================="
+          find ./packages -name "*.nupkg" -type f | while read -r package; do
+            echo "📦 Package: $(basename "$package")"
+            echo "   Size: $(du -h "$package" | cut -f1)"
+          done
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 3: Validate Package Count
+      # -----------------------------------------------------------------------
+      - name: Validate packages exist
+        shell: bash
+        run: |
+          # Count packages (excluding symbols)
+          PACKAGE_COUNT=$(find ./packages -name "*.nupkg" -not -name "*.symbols.nupkg" | wc -l)
+
+          if [ "$PACKAGE_COUNT" -eq 0 ]; then
+            echo "❌ ERROR: No NuGet packages found to publish"
+            exit 1
+          fi
+
+          echo "✅ Found $PACKAGE_COUNT NuGet package(s) to publish"
+
+      # -----------------------------------------------------------------------
+      # Step 4: Setup .NET SDK
+      # -----------------------------------------------------------------------
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      # -----------------------------------------------------------------------
+      # Step 5: Add GitHub Packages Source
+      # -----------------------------------------------------------------------
+      - name: Add GitHub Packages source
+        shell: bash
+        run: |
+          # Extract owner and repo from GITHUB_REPOSITORY
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          echo "🔧 Configuring NuGet source for GitHub Packages"
+          echo "   Owner: $OWNER"
+          echo "   Repository: ${{ github.repository }}"
+
+          # Add GitHub Packages as a source
+          dotnet nuget add source \
+            --username ${{ github.actor }} \
+            --password ${{ secrets.GITHUB_TOKEN }} \
+            --store-password-in-clear-text \
+            --name github \
+            "https://nuget.pkg.github.com/$OWNER/index.json" || true
+
+          echo "✅ GitHub Packages source configured"
+
+      # -----------------------------------------------------------------------
+      # Step 6: Publish Main Packages to GitHub Packages
+      # -----------------------------------------------------------------------
+      - name: Publish packages to GitHub Packages
+        shell: bash
+        run: |
+          echo "🚀 Publishing NuGet packages to GitHub Packages..."
+
+          # Find and publish all .nupkg files (excluding symbols)
+          find ./packages -name "*.nupkg" -not -name "*.symbols.nupkg" -type f | while read -r package; do
+            PACKAGE_NAME=$(basename "$package")
+            echo ""
+            echo "📤 Publishing: $PACKAGE_NAME"
+
+            # Build push command
+            PUSH_CMD="dotnet nuget push \"$package\" --source github --api-key ${{ secrets.GITHUB_TOKEN }}"
+
+            # Add skip-duplicate flag if enabled
+            if [ "${{ inputs.skipDuplicate }}" == "true" ]; then
+              PUSH_CMD="$PUSH_CMD --skip-duplicate"
+            fi
+
+            # Execute push command
+            if eval $PUSH_CMD; then
+              echo "✅ Successfully published: $PACKAGE_NAME"
+            else
+              EXIT_CODE=$?
+              if [ $EXIT_CODE -eq 0 ] || [ "${{ inputs.skipDuplicate }}" == "true" ]; then
+                echo "⚠️  Package may already exist (skipped): $PACKAGE_NAME"
+              else
+                echo "❌ Failed to publish: $PACKAGE_NAME"
+                exit $EXIT_CODE
+              fi
+            fi
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "✅ Package Publishing Complete"
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 7: Publish Symbol Packages (Optional)
+      # -----------------------------------------------------------------------
+      - name: Publish symbol packages to GitHub Packages
+        if: hashFiles('./packages/**/*.symbols.nupkg') != ''
+        shell: bash
+        run: |
+          echo "🔍 Publishing symbol packages to GitHub Packages..."
+
+          # Find and publish all .symbols.nupkg files
+          find ./packages -name "*.symbols.nupkg" -type f | while read -r package; do
+            PACKAGE_NAME=$(basename "$package")
+            echo ""
+            echo "📤 Publishing symbols: $PACKAGE_NAME"
+
+            # Build push command
+            PUSH_CMD="dotnet nuget push \"$package\" --source github --api-key ${{ secrets.GITHUB_TOKEN }}"
+
+            # Add skip-duplicate flag if enabled
+            if [ "${{ inputs.skipDuplicate }}" == "true" ]; then
+              PUSH_CMD="$PUSH_CMD --skip-duplicate"
+            fi
+
+            # Execute push command
+            if eval $PUSH_CMD; then
+              echo "✅ Successfully published symbols: $PACKAGE_NAME"
+            else
+              EXIT_CODE=$?
+              if [ $EXIT_CODE -eq 0 ] || [ "${{ inputs.skipDuplicate }}" == "true" ]; then
+                echo "⚠️  Symbol package may already exist (skipped): $PACKAGE_NAME"
+              else
+                echo "❌ Failed to publish symbols: $PACKAGE_NAME"
+                exit $EXIT_CODE
+              fi
+            fi
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "✅ Symbol Package Publishing Complete"
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 8: Display Published Package URLs
+      # -----------------------------------------------------------------------
+      - name: Display package information
+        shell: bash
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          echo ""
+          echo "=========================================="
+          echo "📋 Published Packages"
+          echo "=========================================="
+          echo "View your packages at:"
+          echo "https://github.com/${{ github.repository_owner }}?tab=packages"
+          echo ""
+          echo "To use these packages, add this source:"
+          echo "dotnet nuget add source \\"
+          echo "  --username YOUR_GITHUB_USERNAME \\"
+          echo "  --password YOUR_GITHUB_TOKEN \\"
+          echo "  --store-password-in-clear-text \\"
+          echo "  --name github \\"
+          echo "  \"https://nuget.pkg.github.com/$OWNER/index.json\""
+          echo "=========================================="

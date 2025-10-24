@@ -1,0 +1,178 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Publish NPM Package to GitHub
+# =============================================================================
+# This workflow publishes NPM packages to GitHub Packages registry.
+# It downloads artifacts from a previous build job and pushes them to the registry.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Publish NPM to GitHub
+
+on:
+  workflow_call:
+    inputs:
+      # Artifact name to download (from build_npm job)
+      artifactName:
+        description: "Name of the artifact containing NPM package"
+        required: false
+        type: string
+        default: "npm-package-Linux"
+
+      # NPM registry URL
+      registry:
+        description: "NPM registry URL"
+        required: false
+        type: string
+        default: "https://npm.pkg.github.com"
+
+      # Package scope (e.g., @owner)
+      scope:
+        description: "NPM package scope"
+        required: false
+        type: string
+        default: "@${{ github.repository_owner }}"
+
+      # Runner operating system
+      runsOn:
+        description: "Runner OS (ubuntu-latest, windows-latest, etc.)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    secrets:
+      # GitHub token with package write permissions
+      GITHUB_TOKEN:
+        description: "GitHub token for authentication"
+        required: true
+
+jobs:
+  publish_npm_github:
+    name: "NPM: Publish to GitHub"
+    runs-on: ${{ inputs.runsOn }}
+
+    # Set required permissions for GitHub Packages
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Download NPM Package Artifacts
+      # -----------------------------------------------------------------------
+      - name: Download NPM package
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+          path: ./packages
+
+      # -----------------------------------------------------------------------
+      # Step 2: List Downloaded Packages
+      # -----------------------------------------------------------------------
+      - name: List downloaded packages
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "📦 Downloaded NPM Packages"
+          echo "=========================================="
+          find ./packages -name "*.tgz" -type f | while read -r package; do
+            echo "📦 Package: $(basename "$package")"
+            echo "   Size: $(du -h "$package" | cut -f1)"
+          done
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 3: Validate Package Exists
+      # -----------------------------------------------------------------------
+      - name: Validate package exists
+        shell: bash
+        run: |
+          # Count packages
+          PACKAGE_COUNT=$(find ./packages -name "*.tgz" -type f | wc -l)
+
+          if [ "$PACKAGE_COUNT" -eq 0 ]; then
+            echo "❌ ERROR: No NPM package found to publish"
+            exit 1
+          fi
+
+          echo "✅ Found $PACKAGE_COUNT NPM package(s) to publish"
+
+      # -----------------------------------------------------------------------
+      # Step 4: Setup Node.js
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: ${{ inputs.registry }}
+          scope: ${{ inputs.scope }}
+
+      # -----------------------------------------------------------------------
+      # Step 5: Setup pnpm
+      # -----------------------------------------------------------------------
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: latest
+
+      # -----------------------------------------------------------------------
+      # Step 6: Publish Package to GitHub Packages
+      # -----------------------------------------------------------------------
+      - name: Publish package to GitHub Packages
+        shell: bash
+        run: |
+          echo "🚀 Publishing NPM package to GitHub Packages..."
+
+          # Find and publish the package
+          PACKAGE_FILE=$(find ./packages -name "*.tgz" -type f | head -n 1)
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "❌ ERROR: No package file found"
+            exit 1
+          fi
+
+          PACKAGE_NAME=$(basename "$PACKAGE_FILE")
+          echo "📤 Publishing: $PACKAGE_NAME"
+
+          # Publish using pnpm
+          pnpm publish "$PACKAGE_FILE" --access public --no-git-checks
+
+          if [ $? -eq 0 ]; then
+            echo "✅ Successfully published: $PACKAGE_NAME"
+          else
+            EXIT_CODE=$?
+            echo "❌ Failed to publish: $PACKAGE_NAME"
+            exit $EXIT_CODE
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "✅ Package Publishing Complete"
+          echo "=========================================="
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Step 7: Display Published Package Information
+      # -----------------------------------------------------------------------
+      - name: Display package information
+        shell: bash
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          echo ""
+          echo "=========================================="
+          echo "📋 Published Package"
+          echo "=========================================="
+          echo "Registry: ${{ inputs.registry }}"
+          echo "Scope:    ${{ inputs.scope }}"
+          echo ""
+          echo "View your package at:"
+          echo "https://github.com/${{ github.repository_owner }}?tab=packages"
+          echo ""
+          echo "To install this package, configure your .npmrc:"
+          echo "@${OWNER}:registry=${{ inputs.registry }}"
+          echo "${{ inputs.registry }}/:_authToken=YOUR_GITHUB_TOKEN"
+          echo ""
+          echo "Then install:"
+          echo "npm install @${OWNER}/PACKAGE_NAME"
+          echo "=========================================="

@@ -1,0 +1,46 @@
+# ==============================
+# 🟢 Node / Angular build artifacts
+# ==============================
+node_modules/
+dist/
+.angular/
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+package-lock.json
+
+# ==============================
+# 🔵 .NET build artifacts
+# ==============================
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+*.user
+*.suo
+*.vs/
+
+# ==============================
+# 📝 Logs
+# ==============================
+*.log
+logs/
+*.out
+
+# ==============================
+# 🔒 Environment / Secrets
+# ==============================
+.env
+.env.local
+.env.*.local
+secrets/
+
+# ==============================
+# 💻 OS / IDE / Editor files
+# ==============================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

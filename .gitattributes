@@ -1,0 +1,189 @@
+# Automatically normalize text files
+* text=auto
+
+# ==============================
+# 🚀 Common Source Code Files (LF)
+# ==============================
+*.c                 text eol=lf
+*.cpp               text eol=lf
+*.cxx               text eol=lf
+*.h                 text eol=lf
+*.hpp               text eol=lf
+*.hxx               text eol=lf
+*.cc                text eol=lf
+*.m                 text eol=lf
+*.mm                text eol=lf
+*.cs                text eol=lf
+*.go                text eol=lf
+*.java              text eol=lf
+*.js                text eol=lf
+*.jsx               text eol=lf
+*.ts                text eol=lf
+*.tsx               text eol=lf
+*.php               text eol=lf
+*.rb                text eol=lf
+*.rs                text eol=lf
+*.swift             text eol=lf
+*.kt                text eol=lf
+*.kts               text eol=lf
+*.scala             text eol=lf
+*.lua               text eol=lf
+*.pl                text eol=lf
+*.pm                text eol=lf
+*.sql               text eol=lf
+*.vb                text eol=lf
+*.fs                text eol=lf
+
+# ==============================
+# 📜 Scripting & Config Files (LF)
+# ==============================
+*.sh                text eol=lf
+*.bash              text eol=lf
+*.zsh               text eol=lf
+*.fish              text eol=lf
+*.py                text eol=lf
+*.rb                text eol=lf
+*.perl              text eol=lf
+*.tcl               text eol=lf
+*.yml               text eol=lf
+*.yaml              text eol=lf
+*.json              text eol=lf
+*.toml              text eol=lf
+*.ini               text eol=lf
+*.conf              text eol=lf
+*.cfg               text eol=lf
+*.env               text eol=lf
+*.properties        text eol=lf
+*.dockerfile        text eol=lf
+*.gitignore         text eol=lf
+*.gitattributes     text eol=lf
+*.editorconfig      text eol=lf
+
+# ==============================
+# 🎨 Web Development Files (LF)
+# ==============================
+*.css               text eol=lf
+*.scss              text eol=lf
+*.sass              text eol=lf
+*.less              text eol=lf
+*.html              text eol=lf
+*.htm               text eol=lf
+*.xml               text eol=lf
+*.svg               text eol=lf
+*.md                text eol=lf
+*.markdown          text eol=lf
+
+# ==============================
+# 🎯 .NET-Specific Files (LF)
+# ==============================
+*.csproj            text eol=lf
+*.vbproj            text eol=lf
+*.sln               text eol=lf
+*.slnx              text eol=lf
+*.fsproj            text eol=lf
+*.props             text eol=lf
+*.targets           text eol=lf
+*.resx              text eol=lf
+*.config            text eol=lf
+*.settings          text eol=lf
+*.razor             text eol=lf
+*.cshtml            text eol=lf
+*.vbhtml            text eol=lf
+*.aspx              text eol=lf
+*.ascx              text eol=lf
+*.asmx              text eol=lf
+*.xaml              text eol=lf
+
+# ==============================
+# 🖥️ Windows-Specific Files (CRLF)
+# ==============================
+*.bat               text eol=crlf
+*.cmd               text eol=crlf
+*.ps1               text eol=crlf
+*.psm1              text eol=crlf
+*.reg               text eol=crlf
+*.vbs               text eol=crlf
+
+# ==============================
+# 📝 Documentation & Text (LF)
+# ==============================
+*.txt               text eol=lf
+*.log               text eol=lf
+*.rst               text eol=lf
+*.tex               text eol=lf
+*.bib               text eol=lf
+
+# ==============================
+# 🔄 Data Files (LF)
+# ==============================
+*.csv               text eol=lf
+*.tsv               text eol=lf
+*.sql               text eol=lf
+
+# ==============================
+# 🔄 Makefiles (LF)
+# ==============================
+Makefile            text eol=lf
+*.mk                text eol=lf
+*.mak               text eol=lf
+
+# ==============================
+# 📦 Package Management (LF)
+# ==============================
+*.lock              text eol=lf
+*.npmrc             text eol=lf
+*.yarnrc            text eol=lf
+*.pnpmfile.cjs      text eol=lf
+*.package.json      text eol=lf
+
+# ==============================
+# 🚫 Binary Files (No Conversion)
+# ==============================
+*.png               binary
+*.jpg               binary
+*.jpeg              binary
+*.gif               binary
+*.ico               binary
+*.bmp               binary
+*.tiff              binary
+*.webp              binary
+*.mp3               binary
+*.mp4               binary
+*.avi               binary
+*.mov               binary
+*.wmv               binary
+*.ogg               binary
+*.wav               binary
+*.flac              binary
+*.pdf               binary
+*.zip               binary
+*.gz                binary
+*.tar               binary
+*.rar               binary
+*.7z                binary
+*.exe               binary
+*.dll               binary
+*.pdb               binary
+*.so                binary
+*.dylib             binary
+*.class             binary
+*.jar               binary
+*.war               binary
+*.o                 binary
+*.a                 binary
+*.lib               binary
+*.obj               binary
+*.iso               binary
+*.db                binary
+*.sqlite            binary
+
+# ==============================
+# 🔐 Security & Certificates (No Conversion)
+# ==============================
+*.pem               -text
+*.crt               -text
+*.cer               -text
+*.key               -text
+*.der               -text
+*.pfx               -text
+*.p12               -text

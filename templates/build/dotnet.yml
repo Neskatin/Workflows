@@ -1,0 +1,308 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Build .NET Applications
+# =============================================================================
+# This workflow handles .NET project building, linting, testing, and publishing.
+# It can be called from other workflows as a reusable job template.
+# Supports both traditional .sln and new .slnx solution file formats.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Build .NET Application
+
+on:
+  workflow_call:
+    inputs:
+      # Directory containing the .NET project/solution
+      rootDirectory:
+        description: 'Root directory of the .NET project'
+        required: false
+        type: string
+        default: '.'
+
+      # Enable/disable code linting and license checks
+      lint:
+        description: 'Run linting and license validation'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable unit tests execution
+      test:
+        description: 'Run unit tests'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable artifact publishing
+      publish:
+        description: 'Publish build artifacts'
+        required: false
+        type: boolean
+        default: false
+
+      # Enable/disable ZIP compression for artifacts
+      zipArtifacts:
+        description: 'Compress artifacts as ZIP files'
+        required: false
+        type: boolean
+        default: true
+
+      # Runner operating system
+      runsOn:
+        description: 'Runner OS (ubuntu-latest, windows-latest, etc.)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  build_dotnet:
+    name: 'DotNet: Build'
+    runs-on: ${{ inputs.runsOn }}
+
+    # Environment variables consumed from build_semver job
+    env:
+      VERSION_CORE: ${{ needs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ needs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ needs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ needs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ needs.build_semver.outputs.VERSION_SHORTSHA }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for versioning
+
+      # -----------------------------------------------------------------------
+      # Step 2: Validate Semantic Version (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Validate semantic version is set
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -z "$VERSION_CORE" ]; then
+            echo "❌ ERROR: VERSION_CORE is not set"
+            exit 1
+          else
+            echo "✅ VERSION_CORE is set to: $VERSION_CORE"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 3: Update Version in Configuration Files (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Update version in appsettings.json
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Find and update all appsettings.json files with version information
+          find . -name "appsettings.json" -type f | while read -r file; do
+            echo "Updating version in: $file"
+            # Use jq to inject version information (pre-installed on GitHub runners)
+            jq --arg core "$VERSION_CORE" \
+               --arg semver "$VERSION_SEMVER" \
+               --arg fullsemver "$VERSION_FULLSEMVER" \
+               --arg sha "$VERSION_SHA" \
+               --arg shortsha "$VERSION_SHORTSHA" \
+               '. + {Version: {Core: $core, SemVer: $semver, FullSemVer: $fullsemver, Sha: $sha, ShortSha: $shortsha}}' \
+               "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+          done
+
+      # -----------------------------------------------------------------------
+      # Step 4: Setup .NET SDK (Using global.json)
+      # -----------------------------------------------------------------------
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.rootDirectory }}/global.json
+
+      # -----------------------------------------------------------------------
+      # Step 5: Restore .NET Local Tools
+      # -----------------------------------------------------------------------
+      - name: Restore .NET local tools
+        working-directory: ${{ inputs.rootDirectory }}
+        run: dotnet tool restore
+
+      # -----------------------------------------------------------------------
+      # Step 6: Restore NuGet Dependencies
+      # -----------------------------------------------------------------------
+      - name: Restore NuGet packages
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -f "NuGet.config" ]; then
+            dotnet restore --configfile NuGet.config
+          else
+            dotnet restore
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 7: Find Solution File (.sln or .slnx)
+      # -----------------------------------------------------------------------
+      - name: Locate solution file
+        id: find-solution
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Search for .slnx first (new format), then fall back to .sln
+          SOLUTION_FILE=$(find . \( -name "*.slnx" -o -name "*.sln" \) -type f | head -n 1)
+
+          if [ -n "$SOLUTION_FILE" ]; then
+            echo "✅ Found solution file: $SOLUTION_FILE"
+            echo "SOLUTION_FILE=$SOLUTION_FILE" >> $GITHUB_ENV
+
+            # Determine solution type
+            if [[ "$SOLUTION_FILE" == *.slnx ]]; then
+              echo "📦 Solution format: SLNX (XML-based)"
+              echo "SOLUTION_TYPE=slnx" >> $GITHUB_ENV
+            else
+              echo "📦 Solution format: SLN (traditional)"
+              echo "SOLUTION_TYPE=sln" >> $GITHUB_ENV
+            fi
+          else
+            echo "❌ ERROR: No solution file found (.sln or .slnx)"
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 8: Check for License Violations (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Check for license violations
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet tool run nuget-license \
+            -i ${{ env.SOLUTION_FILE }} \
+            --include-transitive \
+            --ignored-packages license-ignore.json \
+            --licenseurl-to-license-mappings license-mapping.json \
+            --allowed-license-types license-whitelist.json \
+            --error-only
+
+      # -----------------------------------------------------------------------
+      # Step 9: Lint Code with dotnet-format (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Lint code with dotnet-format
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet format \
+            --no-restore \
+            --verify-no-changes \
+            --severity error \
+            --verbosity detailed
+
+      # -----------------------------------------------------------------------
+      # Step 10: Build Projects (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Build projects for testing
+        if: inputs.test == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: dotnet build -c Release
+
+      # -----------------------------------------------------------------------
+      # Step 11: Run Unit Tests with Code Coverage (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Run unit tests with coverage
+        if: inputs.test == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet test \
+            -c Release \
+            --no-build \
+            /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=opencover \
+            /p:CoverletOutput=./TestResults/Coverage/ \
+            --collect:"Code Coverage" \
+            --logger "trx;LogFileName=test-results.trx" \
+            -- RunConfiguration.DisableAppDomain=true
+
+      # -----------------------------------------------------------------------
+      # Step 12: Upload Test Results (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Upload test results
+        if: inputs.test == true && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ runner.os }}
+          path: ${{ inputs.rootDirectory }}/**/TestResults/**/*
+          retention-days: 30
+
+      # -----------------------------------------------------------------------
+      # Step 13: Publish Projects to Staging Directory (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Publish projects to staging directory
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Set staging directory
+          STAGING_DIR="${{ github.workspace }}/staging"
+
+          echo "📦 Publishing with version: $VERSION_CORE"
+          # Publish with version
+          dotnet publish \
+            -o "$STAGING_DIR" \
+            -c Release \
+            -p:Version=${{ env.VERSION_CORE }} \
+            --no-restore \
+            "src/**/*.csproj"
+
+      # -----------------------------------------------------------------------
+      # Step 14: Create ZIP Archives (Only if ZIP Enabled & Publishing)
+      # -----------------------------------------------------------------------
+      - name: Create ZIP archives (Linux/macOS)
+        if: inputs.publish == true && inputs.zipArtifacts == true && runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd ${{ github.workspace }}/staging
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              project_name=$(basename "$dir")
+              echo "📦 Creating ZIP archive for: $project_name"
+              zip -r "${project_name}.zip" "$dir"
+              # Remove uncompressed directory after zipping
+              rm -rf "$dir"
+            fi
+          done
+
+      - name: Create ZIP archives (Windows)
+        if: inputs.publish == true && inputs.zipArtifacts == true && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd ${{ github.workspace }}/staging
+          Get-ChildItem -Directory | ForEach-Object {
+            $projectName = $_.Name
+            Write-Host "📦 Creating ZIP archive for: $projectName"
+            Compress-Archive -Path "$($_.FullName)\*" -DestinationPath "$projectName.zip" -Force
+            # Remove uncompressed directory after zipping
+            Remove-Item -Path $_.FullName -Recurse -Force
+          }
+
+      # -----------------------------------------------------------------------
+      # Step 15: Upload Build Artifacts as ZIP (Only if Publishing & ZIP Enabled)
+      # -----------------------------------------------------------------------
+      - name: Upload build artifacts (ZIP)
+        if: inputs.publish == true && inputs.zipArtifacts == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-${{ runner.os }}
+          path: ${{ github.workspace }}/staging/**/*.zip
+          retention-days: 90
+          if-no-files-found: error
+
+      # -----------------------------------------------------------------------
+      # Step 16: Upload Build Artifacts as Folders (Only if Publishing & ZIP Disabled)
+      # -----------------------------------------------------------------------
+      - name: Upload build artifacts (Uncompressed)
+        if: inputs.publish == true && inputs.zipArtifacts == false
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-${{ runner.os }}
+          path: ${{ github.workspace }}/staging/**/*
+          retention-days: 90
+          if-no-files-found: error

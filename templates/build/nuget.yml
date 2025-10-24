@@ -1,0 +1,303 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Build NuGet Packages
+# =============================================================================
+# This workflow handles .NET NuGet package building, linting, testing, and publishing.
+# It can be called from other workflows as a reusable job template.
+# Supports both traditional .sln and new .slnx solution file formats.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Build NuGet Packages
+
+on:
+  workflow_call:
+    inputs:
+      # Directory containing the .NET project/solution
+      rootDirectory:
+        description: 'Root directory of the .NET project'
+        required: false
+        type: string
+        default: '.'
+
+      # Enable/disable code linting and license checks
+      lint:
+        description: 'Run linting and license validation'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable unit tests execution
+      test:
+        description: 'Run unit tests'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable NuGet package creation
+      pack:
+        description: 'Create NuGet packages'
+        required: false
+        type: boolean
+        default: false
+
+      # Enable/disable symbols package creation
+      includeSymbols:
+        description: 'Include symbols in NuGet packages'
+        required: false
+        type: boolean
+        default: true
+
+      # Projects to pack (glob pattern)
+      packProjects:
+        description: 'Projects to pack (glob pattern)'
+        required: false
+        type: string
+        default: 'src/**/*.csproj'
+
+      # Runner operating system
+      runsOn:
+        description: 'Runner OS (ubuntu-latest, windows-latest, etc.)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  build_nuget:
+    name: 'NuGet: Build'
+    runs-on: ${{ inputs.runsOn }}
+
+    # Environment variables consumed from build_semver job
+    env:
+      VERSION_CORE: ${{ needs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ needs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ needs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ needs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ needs.build_semver.outputs.VERSION_SHORTSHA }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for versioning
+
+      # -----------------------------------------------------------------------
+      # Step 2: Validate Semantic Version (Only if Packing)
+      # -----------------------------------------------------------------------
+      - name: Validate semantic version is set
+        if: inputs.pack == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -z "$VERSION_CORE" ]; then
+            echo "❌ ERROR: VERSION_CORE is not set"
+            exit 1
+          else
+            echo "✅ VERSION_CORE is set to: $VERSION_CORE"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 3: Setup .NET SDK (Using global.json)
+      # -----------------------------------------------------------------------
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.rootDirectory }}/global.json
+
+      # -----------------------------------------------------------------------
+      # Step 4: Restore .NET Local Tools
+      # -----------------------------------------------------------------------
+      - name: Restore .NET local tools
+        working-directory: ${{ inputs.rootDirectory }}
+        run: dotnet tool restore
+
+      # -----------------------------------------------------------------------
+      # Step 5: Restore NuGet Dependencies
+      # -----------------------------------------------------------------------
+      - name: Restore NuGet packages
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -f "NuGet.config" ]; then
+            dotnet restore --configfile NuGet.config
+          else
+            dotnet restore
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 6: Find Solution File (.sln or .slnx)
+      # -----------------------------------------------------------------------
+      - name: Locate solution file
+        id: find-solution
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Search for .slnx first (new format), then fall back to .sln
+          SOLUTION_FILE=$(find . \( -name "*.slnx" -o -name "*.sln" \) -type f | head -n 1)
+
+          if [ -n "$SOLUTION_FILE" ]; then
+            echo "✅ Found solution file: $SOLUTION_FILE"
+            echo "SOLUTION_FILE=$SOLUTION_FILE" >> $GITHUB_ENV
+
+            # Determine solution type
+            if [[ "$SOLUTION_FILE" == *.slnx ]]; then
+              echo "📦 Solution format: SLNX (XML-based)"
+              echo "SOLUTION_TYPE=slnx" >> $GITHUB_ENV
+            else
+              echo "📦 Solution format: SLN (traditional)"
+              echo "SOLUTION_TYPE=sln" >> $GITHUB_ENV
+            fi
+          else
+            echo "❌ ERROR: No solution file found (.sln or .slnx)"
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 7: Check for License Violations (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Check for license violations
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet tool run nuget-license \
+            -i ${{ env.SOLUTION_FILE }} \
+            --include-transitive \
+            --ignored-packages license-ignore.json \
+            --licenseurl-to-license-mappings license-mapping.json \
+            --allowed-license-types license-whitelist.json \
+            --error-only
+
+      # -----------------------------------------------------------------------
+      # Step 8: Lint Code with dotnet-format (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Lint code with dotnet-format
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet format \
+            --no-restore \
+            --verify-no-changes \
+            --severity error \
+            --verbosity detailed
+
+      # -----------------------------------------------------------------------
+      # Step 9: Build Projects (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Build projects for testing
+        if: inputs.test == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: dotnet build -c Release
+
+      # -----------------------------------------------------------------------
+      # Step 10: Run Unit Tests with Code Coverage (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Run unit tests with coverage
+        if: inputs.test == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: |
+          dotnet test \
+            -c Release \
+            --no-build \
+            /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=opencover \
+            /p:CoverletOutput=./TestResults/Coverage/ \
+            --collect:"Code Coverage" \
+            --logger "trx;LogFileName=test-results.trx" \
+            -- RunConfiguration.DisableAppDomain=true
+
+      # -----------------------------------------------------------------------
+      # Step 11: Upload Test Results (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Upload test results
+        if: inputs.test == true && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ runner.os }}
+          path: ${{ inputs.rootDirectory }}/**/TestResults/**/*
+          retention-days: 30
+
+      # -----------------------------------------------------------------------
+      # Step 12: Create NuGet Packages (Only if Packing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Create NuGet packages
+        if: inputs.pack == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Set output directory
+          PACKAGE_DIR="${{ github.workspace }}/packages"
+          mkdir -p "$PACKAGE_DIR"
+
+          echo "📦 Creating NuGet packages with version: $VERSION_CORE"
+
+          # Build pack arguments
+          PACK_ARGS="-c Release -o \"$PACKAGE_DIR\" -p:PackageVersion=$VERSION_CORE --no-restore --no-build"
+
+          # Add symbols if enabled
+          if [ "${{ inputs.includeSymbols }}" == "true" ]; then
+            echo "🔍 Including symbols package"
+            PACK_ARGS="$PACK_ARGS --include-symbols -p:SymbolPackageFormat=snupkg"
+          fi
+
+          # Find and pack projects
+          echo "🔎 Searching for projects matching: ${{ inputs.packProjects }}"
+
+          # Use find with glob pattern
+          find . -path "./${{ inputs.packProjects }}" -type f | while read -r project; do
+            echo "📦 Packing project: $project"
+            dotnet pack "$project" $PACK_ARGS
+
+            if [ $? -ne 0 ]; then
+              echo "❌ ERROR: Failed to pack $project"
+              exit 1
+            fi
+          done
+
+          # List created packages
+          echo ""
+          echo "=========================================="
+          echo "📋 Created NuGet Packages"
+          echo "=========================================="
+          ls -lh "$PACKAGE_DIR"
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 13: Validate NuGet Packages (Only if Packing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Validate NuGet packages
+        if: inputs.pack == true
+        shell: bash
+        run: |
+          PACKAGE_DIR="${{ github.workspace }}/packages"
+
+          echo "🔍 Validating NuGet packages..."
+
+          # Check if any .nupkg files exist
+          PACKAGE_COUNT=$(find "$PACKAGE_DIR" -name "*.nupkg" -not -name "*.symbols.nupkg" | wc -l)
+
+          if [ "$PACKAGE_COUNT" -eq 0 ]; then
+            echo "❌ ERROR: No NuGet packages found in $PACKAGE_DIR"
+            exit 1
+          fi
+
+          echo "✅ Found $PACKAGE_COUNT NuGet package(s)"
+
+          # Display package details
+          find "$PACKAGE_DIR" -name "*.nupkg" -type f | while read -r package; do
+            echo "📦 Package: $(basename "$package")"
+            echo "   Size: $(du -h "$package" | cut -f1)"
+          done
+
+      # -----------------------------------------------------------------------
+      # Step 14: Upload NuGet Packages as Pipeline Artifacts
+      # -----------------------------------------------------------------------
+      - name: Upload NuGet packages as artifacts
+        if: inputs.pack == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages-${{ runner.os }}
+          path: ${{ github.workspace }}/packages/**/*.nupkg
+          retention-days: 90
+          if-no-files-found: error

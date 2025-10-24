@@ -1,0 +1,290 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Build SPA Application
+# =============================================================================
+# This workflow handles SPA (Single Page Application) building, linting, and testing.
+# It can be called from other workflows as a reusable job template.
+# Supports Node.js projects with pnpm package manager.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Build SPA Application
+
+on:
+  workflow_call:
+    inputs:
+      # Directory containing the SPA project
+      rootDirectory:
+        description: 'Root directory of the SPA project'
+        required: false
+        type: string
+        default: '.'
+
+      # Enable/disable code linting and license checks
+      lint:
+        description: 'Run linting and license validation'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable unit tests execution
+      test:
+        description: 'Run unit tests'
+        required: false
+        type: boolean
+        default: true
+
+      # Enable/disable artifact publishing
+      publish:
+        description: 'Publish build artifacts'
+        required: false
+        type: boolean
+        default: false
+
+      # Enable/disable ZIP compression for artifacts
+      zipArtifacts:
+        description: 'Compress artifacts as ZIP files'
+        required: false
+        type: boolean
+        default: true
+
+      # Runner operating system
+      runsOn:
+        description: 'Runner OS (ubuntu-latest, windows-latest, etc.)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  build_spa:
+    name: 'SPA: Build'
+    runs-on: ${{ inputs.runsOn }}
+
+    # Environment variables consumed from build_semver job
+    env:
+      VERSION_CORE: ${{ needs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ needs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ needs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ needs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ needs.build_semver.outputs.VERSION_SHORTSHA }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for versioning
+
+      # -----------------------------------------------------------------------
+      # Step 2: Validate Semantic Version (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Validate semantic version is set
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -z "$VERSION_CORE" ]; then
+            echo "❌ ERROR: VERSION_CORE is not set"
+            exit 1
+          else
+            echo "✅ VERSION_CORE is set to: $VERSION_CORE"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 3: Update Version in package.json (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Update version in package.json
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          echo "📦 Updating version to: $VERSION_CORE"
+
+          # Find all package.json files and update the version
+          find . -name "package.json" -type f | while read -r packageJsonFile; do
+            echo "Processing: $packageJsonFile"
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION_CORE\"/g" "$packageJsonFile"
+
+            # Display updated version
+            echo "Updated version:"
+            grep "\"version\":" "$packageJsonFile" || true
+          done
+
+      # -----------------------------------------------------------------------
+      # Step 4: Update Version Query Parameters (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Update version query parameters in HTML files
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          echo "🔗 Updating query parameters with SHA: $VERSION_SHA"
+
+          # Find all index.html files and update the version query parameter
+          find . -name "index.html" -type f | while read -r indexFile; do
+            echo "Processing: $indexFile"
+            sed -i "s/?x-version=0/?x-version=$VERSION_SHA/g" "$indexFile"
+          done
+
+          # Find all manifest.webmanifest files and update the version query parameter
+          find . -name "manifest.webmanifest" -type f | while read -r manifestFile; do
+            echo "Processing: $manifestFile"
+            sed -i "s/?x-version=0/?x-version=$VERSION_SHA/g" "$manifestFile"
+          done
+
+          echo "✅ Version query parameters updated"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Update Version in version.json (Only if Publishing)
+      # -----------------------------------------------------------------------
+      - name: Update version in version.json
+        if: inputs.publish == true
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          # Find and update all version.json files with version information
+          find . -name "version.json" -type f | while read -r file; do
+            echo "Updating version in: $file"
+            # Use jq to inject version information (pre-installed on GitHub runners)
+            jq --arg core "$VERSION_CORE" \
+               --arg semver "$VERSION_SEMVER" \
+               --arg fullsemver "$VERSION_FULLSEMVER" \
+               --arg sha "$VERSION_SHA" \
+               --arg shortsha "$VERSION_SHORTSHA" \
+               '. + {Version: {Core: $core, SemVer: $semver, FullSemVer: $fullsemver, Sha: $sha, ShortSha: $shortsha}}' \
+               "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+
+            echo "Updated content:"
+            cat "$file"
+          done
+
+      # -----------------------------------------------------------------------
+      # Step 6: Setup Node.js
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '${{ inputs.rootDirectory }}/.nvmrc'
+          cache: 'pnpm'
+          cache-dependency-path: '${{ inputs.rootDirectory }}/pnpm-lock.yaml'
+
+      # -----------------------------------------------------------------------
+      # Step 7: Setup pnpm Package Manager
+      # -----------------------------------------------------------------------
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: latest
+          run_install: false
+
+      # -----------------------------------------------------------------------
+      # Step 8: Configure NPM Authentication (If .npmrc exists)
+      # -----------------------------------------------------------------------
+      - name: Configure NPM authentication
+        if: hashFiles(format('{0}/.npmrc', inputs.rootDirectory)) != ''
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          if [ -f ".npmrc" ]; then
+            echo "🔐 Configuring NPM authentication"
+            # Add authentication token if available
+            if [ -n "${{ secrets.NPM_TOKEN }}" ]; then
+              echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> .npmrc
+            fi
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 9: Install Dependencies
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm install --frozen-lockfile
+
+      # -----------------------------------------------------------------------
+      # Step 10: Check for License Violations (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Check licenses of dependencies
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm run license:check
+
+      # -----------------------------------------------------------------------
+      # Step 11: Lint Code (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Run linting
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm run lint
+
+      # -----------------------------------------------------------------------
+      # Step 12: Check Translations (Only if Linting Enabled)
+      # -----------------------------------------------------------------------
+      - name: Check translations
+        if: inputs.lint == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm run i18n:find
+
+      # -----------------------------------------------------------------------
+      # Step 13: Run Unit Tests (Only if Testing Enabled)
+      # -----------------------------------------------------------------------
+      - name: Run tests
+        if: inputs.test == true
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm run test:all
+
+      # -----------------------------------------------------------------------
+      # Step 14: Build Project
+      # -----------------------------------------------------------------------
+      - name: Build project
+        working-directory: ${{ inputs.rootDirectory }}
+        run: pnpm run build
+
+      # -----------------------------------------------------------------------
+      # Step 15: Create ZIP Archive (Only if Publishing & ZIP Enabled)
+      # -----------------------------------------------------------------------
+      - name: Create ZIP archive (Linux/macOS)
+        if: inputs.publish == true && inputs.zipArtifacts == true && runner.os != 'Windows'
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: bash
+        run: |
+          echo "📦 Creating ZIP archive of build output"
+          cd dist
+          zip -r ../spa-build.zip .
+          cd ..
+          echo "✅ ZIP archive created: spa-build.zip"
+          ls -lh spa-build.zip
+
+      - name: Create ZIP archive (Windows)
+        if: inputs.publish == true && inputs.zipArtifacts == true && runner.os == 'Windows'
+        working-directory: ${{ inputs.rootDirectory }}
+        shell: pwsh
+        run: |
+          Write-Host "📦 Creating ZIP archive of build output"
+          Compress-Archive -Path "dist\*" -DestinationPath "spa-build.zip" -Force
+          Write-Host "✅ ZIP archive created: spa-build.zip"
+          Get-Item spa-build.zip | Format-List
+
+      # -----------------------------------------------------------------------
+      # Step 16: Upload Build Artifacts as ZIP (Only if Publishing & ZIP Enabled)
+      # -----------------------------------------------------------------------
+      - name: Upload build artifacts (ZIP)
+        if: inputs.publish == true && inputs.zipArtifacts == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: spa-${{ runner.os }}
+          path: ${{ inputs.rootDirectory }}/spa-build.zip
+          retention-days: 90
+          if-no-files-found: error
+
+      # -----------------------------------------------------------------------
+      # Step 17: Upload Build Artifacts as Folder (Only if Publishing & ZIP Disabled)
+      # -----------------------------------------------------------------------
+      - name: Upload build artifacts (Uncompressed)
+        if: inputs.publish == true && inputs.zipArtifacts == false
+        uses: actions/upload-artifact@v4
+        with:
+          name: spa-${{ runner.os }}
+          path: ${{ inputs.rootDirectory }}/dist/**/*
+          retention-days: 90
+          if-no-files-found: error

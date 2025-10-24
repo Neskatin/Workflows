@@ -1,0 +1,335 @@
+# =============================================================================
+# GitHub Actions Reusable Workflow: Build Docker Containers
+# =============================================================================
+# This workflow builds and packages applications into Docker containers.
+# It downloads artifacts from a previous build job and creates Docker images.
+# Supports multi-platform builds and can push to multiple registries.
+# Compatible with both Windows and Linux runners.
+# =============================================================================
+
+name: Build Docker Containers
+
+on:
+  workflow_call:
+    inputs:
+      # Artifact name to download (from build job)
+      artifactName:
+        description: "Name of the artifact containing build output"
+        required: false
+        type: string
+        default: "dotnet-Linux"
+
+      # Directory containing Dockerfiles
+      dockerfileDirectory:
+        description: "Directory containing Dockerfiles"
+        required: false
+        type: string
+        default: "."
+
+      # Dockerfile path (relative to dockerfileDirectory)
+      dockerfilePath:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile"
+
+      # Docker image name (without registry prefix)
+      imageName:
+        description: "Docker image name"
+        required: true
+        type: string
+
+      # Enable/disable pushing to registry
+      pushToRegistry:
+        description: "Push image to container registry"
+        required: false
+        type: boolean
+        default: false
+
+      # Target registry (ghcr.io, docker.io, etc.)
+      registry:
+        description: "Container registry URL"
+        required: false
+        type: string
+        default: "ghcr.io"
+
+      # Build platforms (comma-separated)
+      platforms:
+        description: "Target platforms for multi-arch builds"
+        required: false
+        type: string
+        default: "linux/amd64"
+
+      # Docker build context path
+      contextPath:
+        description: "Docker build context path"
+        required: false
+        type: string
+        default: "."
+
+      # Additional build arguments
+      buildArgs:
+        description: "Additional Docker build arguments (newline-separated)"
+        required: false
+        type: string
+        default: ""
+
+      # Runner operating system
+      runsOn:
+        description: "Runner OS (ubuntu-latest, windows-latest, etc.)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    secrets:
+      # Registry username (optional, uses github.actor if not provided)
+      REGISTRY_USERNAME:
+        description: "Container registry username"
+        required: false
+
+      # Registry password/token
+      REGISTRY_PASSWORD:
+        description: "Container registry password or token"
+        required: false
+
+jobs:
+  publish_docker:
+    name: "Docker: Build & Push"
+    runs-on: ${{ inputs.runsOn }}
+
+    # Set required permissions for GitHub Container Registry
+    permissions:
+      contents: read
+      packages: write
+
+    # Environment variables consumed from build_semver job
+    env:
+      VERSION_CORE: ${{ needs.build_semver.outputs.VERSION_CORE }}
+      VERSION_SEMVER: ${{ needs.build_semver.outputs.VERSION_SEMVER }}
+      VERSION_FULLSEMVER: ${{ needs.build_semver.outputs.VERSION_FULLSEMVER }}
+      VERSION_SHA: ${{ needs.build_semver.outputs.VERSION_SHA }}
+      VERSION_SHORTSHA: ${{ needs.build_semver.outputs.VERSION_SHORTSHA }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout Repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Download Build Artifacts
+      # -----------------------------------------------------------------------
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+          path: ./artifacts
+
+      # -----------------------------------------------------------------------
+      # Step 3: Extract Artifacts (If ZIP)
+      # -----------------------------------------------------------------------
+      - name: Extract artifacts (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "📦 Extracting artifacts..."
+          cd ./artifacts
+
+          # Check if there are any ZIP files
+          if ls *.zip 1> /dev/null 2>&1; then
+            for zipfile in *.zip; do
+              echo "Extracting: $zipfile"
+              unzip -q "$zipfile" -d "${zipfile%.zip}"
+              rm "$zipfile"
+            done
+            echo "✅ Artifacts extracted"
+          else
+            echo "ℹ️  No ZIP files found, assuming uncompressed artifacts"
+          fi
+
+      - name: Extract artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "📦 Extracting artifacts..."
+          cd ./artifacts
+
+          $zipFiles = Get-ChildItem -Filter "*.zip"
+          if ($zipFiles) {
+            foreach ($zipfile in $zipFiles) {
+              Write-Host "Extracting: $($zipfile.Name)"
+              $destFolder = $zipfile.BaseName
+              Expand-Archive -Path $zipfile.FullName -DestinationPath $destFolder -Force
+              Remove-Item $zipfile.FullName
+            }
+            Write-Host "✅ Artifacts extracted"
+          } else {
+            Write-Host "ℹ️  No ZIP files found, assuming uncompressed artifacts"
+          }
+
+      # -----------------------------------------------------------------------
+      # Step 4: List Extracted Content
+      # -----------------------------------------------------------------------
+      - name: List extracted content
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "📋 Extracted Artifact Content"
+          echo "=========================================="
+          ls -lah ./artifacts
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 5: Set Up Docker Buildx
+      # -----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -----------------------------------------------------------------------
+      # Step 6: Set Up QEMU (For Multi-Platform Builds)
+      # -----------------------------------------------------------------------
+      - name: Set up QEMU
+        if: contains(inputs.platforms, ',') || contains(inputs.platforms, 'arm')
+        uses: docker/setup-qemu-action@v3
+
+      # -----------------------------------------------------------------------
+      # Step 7: Log in to Container Registry (If Pushing)
+      # -----------------------------------------------------------------------
+      - name: Log in to container registry
+        if: inputs.pushToRegistry == true
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Step 8: Extract Metadata (Tags & Labels)
+      # -----------------------------------------------------------------------
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.imageName }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.VERSION_CORE }},enable=${{ env.VERSION_CORE != '' }}
+            type=raw,value=${{ env.VERSION_SEMVER }},enable=${{ env.VERSION_SEMVER != '' }}
+            type=sha,prefix={{branch}}-,format=short
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.imageName }}
+            org.opencontainers.image.description=Docker image for ${{ inputs.imageName }}
+            org.opencontainers.image.version=${{ env.VERSION_CORE }}
+            org.opencontainers.image.revision=${{ env.VERSION_SHA }}
+
+      # -----------------------------------------------------------------------
+      # Step 9: Prepare Build Arguments
+      # -----------------------------------------------------------------------
+      - name: Prepare build arguments
+        id: build-args
+        shell: bash
+        run: |
+          echo "🔧 Preparing build arguments..."
+
+          # Start with version arguments
+          BUILD_ARGS="VERSION_CORE=${{ env.VERSION_CORE }}
+          VERSION_SEMVER=${{ env.VERSION_SEMVER }}
+          VERSION_FULLSEMVER=${{ env.VERSION_FULLSEMVER }}
+          VERSION_SHA=${{ env.VERSION_SHA }}
+          VERSION_SHORTSHA=${{ env.VERSION_SHORTSHA }}"
+
+          # Add custom build arguments if provided
+          if [ -n "${{ inputs.buildArgs }}" ]; then
+            BUILD_ARGS="$BUILD_ARGS
+          ${{ inputs.buildArgs }}"
+          fi
+
+          # Save to output
+          echo "build-args<<EOF" >> $GITHUB_OUTPUT
+          echo "$BUILD_ARGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "✅ Build arguments prepared"
+
+      # -----------------------------------------------------------------------
+      # Step 10: Build and Push Docker Image
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.contextPath }}
+          file: ${{ inputs.dockerfileDirectory }}/${{ inputs.dockerfilePath }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.pushToRegistry }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.build-args.outputs.build-args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # -----------------------------------------------------------------------
+      # Step 11: Display Image Information
+      # -----------------------------------------------------------------------
+      - name: Display image information
+        shell: bash
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "🐳 Docker Image Information"
+          echo "=========================================="
+          echo "Registry:  ${{ inputs.registry }}"
+          echo "Image:     ${{ github.repository_owner }}/${{ inputs.imageName }}"
+          echo "Version:   ${{ env.VERSION_CORE }}"
+          echo "Platforms: ${{ inputs.platforms }}"
+          echo ""
+          echo "📋 Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /'
+          echo ""
+          if [ "${{ inputs.pushToRegistry }}" == "true" ]; then
+            echo "✅ Image pushed to registry"
+            echo ""
+            echo "Pull command:"
+            FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n 1)
+            echo "  docker pull $FIRST_TAG"
+          else
+            echo "ℹ️  Image built locally (not pushed)"
+          fi
+          echo "=========================================="
+
+      # -----------------------------------------------------------------------
+      # Step 12: Export Image as Artifact (If Not Pushing)
+      # -----------------------------------------------------------------------
+      - name: Export Docker image
+        if: inputs.pushToRegistry == false
+        shell: bash
+        run: |
+          echo "💾 Exporting Docker image as tar archive..."
+
+          # Get the first tag
+          FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n 1)
+          IMAGE_NAME="${{ inputs.imageName }}"
+
+          # Export image
+          docker save "$FIRST_TAG" -o "${IMAGE_NAME}.tar"
+
+          echo "✅ Image exported: ${IMAGE_NAME}.tar"
+          ls -lh "${IMAGE_NAME}.tar"
+
+      # -----------------------------------------------------------------------
+      # Step 13: Upload Docker Image as Artifact (If Not Pushing)
+      # -----------------------------------------------------------------------
+      - name: Upload Docker image as artifact
+        if: inputs.pushToRegistry == false
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ inputs.imageName }}
+          path: ${{ inputs.imageName }}.tar
+          retention-days: 7
